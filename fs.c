@@ -42,13 +42,64 @@ int fs_format()
 void fs_debug()
 {
 	union fs_block block;
+	union fs_block temp;
+	union fs_block tempindirect;
+	
+	// disk_read(54, temp.data);
+	// int p;
+	// for(p=0; p<5; p++){
+		// printf("%d ", temp.pointers[p]);
+	// }
+	// printf("\n");
 
 	disk_read(0,block.data);
 
+	if(block.super.magic != FS_MAGIC){
+		printf("magic number is invalid\n");
+		return;
+	}
 	printf("superblock:\n");
+	printf("	magic number is valid\n");
 	printf("    %d blocks\n",block.super.nblocks);
 	printf("    %d inode blocks\n",block.super.ninodeblocks);
 	printf("    %d inodes\n",block.super.ninodes);
+	
+	int i, j, k, l;
+	int inodenum;
+	int inodenblocks;
+	for(i=1; i<=block.super.nblocks; i++){
+		if(i<=block.super.ninodeblocks){
+			disk_read(i, temp.data);
+			for(j=0; j<INODES_PER_BLOCK; j++){
+				if(temp.inode[j].isvalid == 1){
+					inodenblocks = temp.inode[j].size/DISK_BLOCK_SIZE + 1;
+					printf("%d\n", inodenblocks);
+					inodenum = (i-1)*INODES_PER_BLOCK+j;
+					printf("inode %d:\n", inodenum);
+					printf("\tsize: %d bytes\n", temp.inode[j].size);
+					printf("\tdirect blocks: ");
+					
+					for(k=0; k<inodenblocks; k++){
+						if(k<POINTERS_PER_INODE){
+							printf(" %d", temp.inode[j].direct[k]);
+						} else if(k==POINTERS_PER_INODE){
+							printf("\n\tindirect block: %d", temp.inode[j].indirect);
+							disk_read(temp.inode[j].indirect, tempindirect.data);
+							printf("\n\tindirect data blocks: ");
+							for(l=0; l<inodenblocks-k; l++){
+								printf(" %d", tempindirect.pointers[l]);
+							}
+							
+							break;
+						}
+						
+						
+					}
+					printf("\n");
+				}
+			}
+		}
+	}
 }
 
 int fs_mount()
