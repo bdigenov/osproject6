@@ -35,8 +35,25 @@ union fs_block {
 };
 
 int fs_format()
-{
-	return 0;
+{	
+	int nblocks = disk_size();
+	int ninodeblocks = 0;
+	
+	//Set number of inode blocks to 10% total blocks 
+	if (nblocks % 10 == 0) ninodeblocks = nblocks/10;
+	else ninodeblocks = nblocks/10 + 1;
+
+	//Create new union with super block
+	union fs_block superblock;
+	superblock.super.magic = FS_MAGIC;
+	superblock.super.nblocks = nblocks;
+	superblock.super.ninodeblocks = ninodeblocks;
+	superblock.super.ninodes = (ninodeblocks * INODES_PER_BLOCK);
+
+	//Write the new superblock to the disk
+	disk_write(0, superblock.data);
+
+	return 1;
 }
 
 void fs_debug()
