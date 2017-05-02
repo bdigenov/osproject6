@@ -13,6 +13,7 @@
 #define POINTERS_PER_INODE 5
 #define POINTERS_PER_BLOCK 1024
 
+int IS_MOUNTED = 0;
 int *freeBlockBitmap;
 int *inodeBitmap;
 
@@ -39,22 +40,53 @@ union fs_block {
 
 int fs_format()
 {	
+	if(IS_MOUNTED == 1) return 0;
+
 	int nblocks = disk_size();
 	int ninodeblocks = 0;
-	
+	int i = 0;
+	int j=0;
+	union fs_block temp;
+
 	//Set number of inode blocks to 10% total blocks 
 	if (nblocks % 10 == 0) ninodeblocks = nblocks/10;
 	else ninodeblocks = nblocks/10 + 1;
 
 	//Create new union with super block
-	union fs_block superblock;
-	superblock.super.magic = FS_MAGIC;
-	superblock.super.nblocks = nblocks;
-	superblock.super.ninodeblocks = ninodeblocks;
-	superblock.super.ninodes = (ninodeblocks * INODES_PER_BLOCK);
+	union fs_block block;
+	block.super.magic = FS_MAGIC;
+	block.super.nblocks = nblocks;
+	block.super.ninodeblocks = ninodeblocks;
+	block.super.ninodes = (ninodeblocks * INODES_PER_BLOCK);
+
+	//Create new bitmap
+	freeBlockBitmap = malloc(sizeof(int)*block.super.nblocks);
+	inodeBitmap = malloc(sizeof(int)*block.super.ninodes);
 
 	//Write the new superblock to the disk
-	disk_write(0, superblock.data);
+	disk_write(0, block.data);
+
+	//Reset inode bitmap
+	for(i=0; i<block.super.ninodes; i++){
+		inodeBitmap[i] = 0;
+	}
+
+	for(i=0; i< nblocks; i++){
+		freeBlockBitmap[i] = 0;
+	}
+
+	//Reset Valid Bits in Disk 
+	for(i=1; i<block.super.nblocks; i++){
+		if(i<=block.super.ninodeblocks){
+			disk_read(i, temp.data);
+			for(j=0; j<INODES_PER_BLOCK; j++){
+				if(temp.inode[j].isvalid == 1){
+					temp.inode[j].isvalid = 0;
+				}
+			}
+		}
+		disk_write(i,temp.data);
+	}
 
 	return 1;
 }
@@ -171,7 +203,7 @@ int fs_mount()
 		}
 	}
 	
-	
+	IS_MOUNTED = 1;
 	return 1;
 }
 
