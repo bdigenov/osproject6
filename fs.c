@@ -129,6 +129,9 @@ void fs_debug()
 					inodenum = (i-1)*INODES_PER_BLOCK+j;
 					printf("inode %d:\n", inodenum);
 					printf("\tsize: %d bytes\n", temp.inode[j].size);
+					if(temp.inode[j].size == 0){
+						return;
+					}
 					printf("\tdirect blocks: ");
 					
 					for(k=0; k<inodenblocks; k++){
@@ -138,8 +141,11 @@ void fs_debug()
 							printf("\n\tindirect block: %d", temp.inode[j].indirect);
 							disk_read(temp.inode[j].indirect, tempindirect.data);
 							printf("\n\tindirect data blocks: ");
-							for(l=0; l<inodenblocks-k; l++){
-								printf(" %d", tempindirect.pointers[l]);
+							//for(l=0; l<inodenblocks-k; l++){
+							for(l=0; l<POINTERS_PER_BLOCK; l++){
+								if(tempindirect.pointers[l] != 0){
+									printf(" %d", tempindirect.pointers[l]);
+								}
 							}
 							
 							break;
@@ -162,6 +168,10 @@ int fs_mount()
 	disk_read(0, block.data);
 	if(block.super.magic != FS_MAGIC){
 		printf("invalid file system\n");
+		return 0;
+	}
+	if(IS_MOUNTED){
+		printf("System already mounted\n");
 		return 0;
 	}
 	freeBlockBitmap = malloc(sizeof(int)*block.super.nblocks);
@@ -190,8 +200,10 @@ int fs_mount()
 						freeBlockBitmap[temp.inode[j].direct[k]] = 1;
 					} else if(k==POINTERS_PER_INODE){
 						disk_read(temp.inode[j].indirect, tempindirect.data);
-						for(l=0; l<inodenblocks-k; l++){
-							freeBlockBitmap[tempindirect.pointers[l]] = 1;
+						for(l=0; l<POINTERS_PER_BLOCK; l++){
+							if(tempindirect.pointers[l] != 0){
+								freeBlockBitmap[tempindirect.pointers[l]] = 1;
+							}
 						}
 						
 						break;
@@ -211,18 +223,24 @@ int fs_create()
 {
 	union fs_block block;
 	disk_read(0, block.data);
-	if(block.super.magic != FS_MAGIC){
+	if(block.super.magic != FS_MAGIC || !IS_MOUNTED){
 		printf("invalid file system\n");
 		return 0;
 	}
 	int i;
 	int blocknum;
+	
+	struct fs_inode newInode;
+	newInode.isvalid = 1;
+	newInode.size = 0;
+	
 	for(i=1; i<block.super.ninodes; i++){
 		if(inodeBitmap[i] == 0){
 			blocknum = i/INODES_PER_BLOCK + 1;
 			disk_read(blocknum, block.data);
-			block.inode[i].isvalid = 1;
-			block.inode[i].size = 0;
+			//block.inode[i].isvalid = 1;
+			//block.inode[i].size = 0;
+			block.inode[i] = newInode;
 			inodeBitmap[i] = 1;
 			disk_write(blocknum, block.data);
 			return i;
@@ -237,7 +255,7 @@ int fs_delete( int inumber )
 	union fs_block block;
 	union fs_block temp;
 	disk_read(0, block.data);
-	if(block.super.magic != FS_MAGIC){
+	if(block.super.magic != FS_MAGIC || !IS_MOUNTED){
 		printf("invalid file system\n");
 		return 0;
 	}
@@ -246,9 +264,11 @@ int fs_delete( int inumber )
 	int blocknum, position, inodenblocks, i, j;
 	
 	blocknum = inumber/INODES_PER_BLOCK + 1;
-	position = inumber - INODES_PER_BLOCK*(blocknum-2);
+	position = inumber - INODES_PER_BLOCK*(blocknum-1);
+	printf("%d\n", position);
 	disk_read(blocknum, block.data);
 	block.inode[position].isvalid = 0;
+	disk_write(blocknum, block.data);
 	inodenblocks = block.inode[position].size/DISK_BLOCK_SIZE + 1;
 	for(i=0; i<inodenblocks; i++){
 		if(i<POINTERS_PER_INODE){
@@ -256,14 +276,16 @@ int fs_delete( int inumber )
 		} else if(i == POINTERS_PER_INODE){
 			disk_read(block.inode[position].indirect, temp.data);
 			freeBlockBitmap[block.inode[position].indirect] = 0;
-			for(j=0; j<inodenblocks-i; j++){
-				freeBlockBitmap[temp.pointers[j]] = 0;
+			for(j=0; j<POINTERS_PER_BLOCK; j++){
+				if(temp.pointers[j] != 0){
+					freeBlockBitmap[temp.pointers[j]] = 0;
+				}
 			}
 			return 1;
 		}
 	}
 	
-	return 0;
+	return 1;
 }
 
 int fs_getsize( int inumber )
@@ -271,9 +293,109 @@ int fs_getsize( int inumber )
 	return -1;
 }
 
-int fs_read( int inumber, char *data, int length, int offset )
+int fs_read( int inumber, char *tmp, int length, int offset )
 {
-	return 0;
+	union fs_block block;
+	union fs_block temp;
+	union fs_block indirectTemp;
+	disk_read(0, block.data);
+	if(block.super.magic != FS_MAGIC || !IS_MOUNTED){
+		printf("invalid file system\n");
+		return 0;
+	}
+	printf("length: %d\n", length);
+	printf("offset: %d\n", offset);
+	
+	int count = 0;
+	int writtencount = 0;
+	int blocknum, position, i, j, k;
+	int blocksSkipped, inodenblocks;
+	int blockoffset;
+	
+	
+	//tmp = malloc(sizeof(char) * length);
+	
+	blocknum = inumber/INODES_PER_BLOCK + 1;
+	position = inumber - INODES_PER_BLOCK*(blocknum-1); //position in the inode block
+	
+	disk_read(blocknum, block.data);
+	inodenblocks = block.inode[position].size/DISK_BLOCK_SIZE + 1;
+	
+	blocksSkipped = offset/DISK_BLOCK_SIZE;				//with the offset, #block 
+	blockoffset = offset - blocksSkipped*DISK_BLOCK_SIZE;
+	
+	printf("blocksSkipped: %d\n",blocksSkipped);
+	printf("blockoffset: %d\n", blockoffset);
+	
+	if(blocksSkipped < POINTERS_PER_INODE){
+		disk_read(block.inode[position].direct[blocksSkipped], temp.data);
+		for(i=0; i<DISK_BLOCK_SIZE; i++){
+			if(count >= blockoffset){
+				*tmp = temp.data[i];
+				tmp++;
+				//tmp[writtencount] = &temp.data[i];
+				//printf("%s", &temp.data[i]);
+				writtencount++;
+				if(writtencount == length){
+					//data = tmp;
+					return writtencount;
+				}
+			}
+			count++;
+		}
+	}
+	for(i=blocksSkipped+1; i<inodenblocks; i++){
+		if(i<POINTERS_PER_INODE){
+			disk_read(block.inode[position].direct[i], temp.data);
+			for(j=0; j<DISK_BLOCK_SIZE; j++){
+				*tmp = temp.data[j];
+				tmp++;
+				//tmp[writtencount] = &temp.data[j];
+				//printf("%d", temp.data[j]);
+				writtencount++;
+				if(writtencount == length){
+					//data = tmp;
+					return writtencount;
+				}
+			}
+		} else {
+			disk_read(block.inode[position].indirect, temp.data);
+			for(j=0; j<POINTERS_PER_BLOCK; j++){
+				if(temp.pointers[j] != 0){
+					disk_read(temp.pointers[j], indirectTemp.data);
+					for(k=0; k<DISK_BLOCK_SIZE; k++){
+						*tmp = indirectTemp.data[k];
+						tmp++;
+						//tmp[writtencount] = &indirectTemp.data[k];
+						//printf("%d", indirectTemp.data[k]);
+						writtencount++;
+						if(writtencount == length){
+							//data = tmp;
+							return writtencount;
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	
+	// for(i=blocksSkipped+1; i<inodenblocks; i++){
+		// if(i<POINTERS_PER_INODE){
+			// freeBlockBitmap[i]=0;
+		// } else if(i == POINTERS_PER_INODE){
+			// disk_read(block.inode[position].indirect, temp.data);
+			// freeBlockBitmap[block.inode[position].indirect] = 0;
+			// for(j=0; j<POINTERS_PER_BLOCK; j++){
+				// if(temp.pointers[j] != 0){
+					// freeBlockBitmap[temp.pointers[j]] = 0;
+				// }
+			// }
+			// return 1;
+		// }
+	// }
+	//data = tmp;
+	return writtencount;
 }
 
 int fs_write( int inumber, const char *data, int length, int offset )
