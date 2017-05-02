@@ -290,6 +290,8 @@ int fs_delete( int inumber )
 
 int fs_getsize( int inumber )
 {
+	int size = 0;
+	
 	return -1;
 }
 
