@@ -209,11 +209,60 @@ int fs_mount()
 
 int fs_create()
 {
+	union fs_block block;
+	disk_read(0, block.data);
+	if(block.super.magic != FS_MAGIC){
+		printf("invalid file system\n");
+		return 0;
+	}
+	int i;
+	int blocknum;
+	for(i=1; i<block.super.ninodes; i++){
+		if(inodeBitmap[i] == 0){
+			blocknum = i/INODES_PER_BLOCK + 1;
+			disk_read(blocknum, block.data);
+			block.inode[i].isvalid = 1;
+			block.inode[i].size = 0;
+			inodeBitmap[i] = 1;
+			disk_write(blocknum, block.data);
+			return i;
+		}
+	}
+	printf("No free inodes\n");
 	return 0;
 }
 
 int fs_delete( int inumber )
 {
+	union fs_block block;
+	union fs_block temp;
+	disk_read(0, block.data);
+	if(block.super.magic != FS_MAGIC){
+		printf("invalid file system\n");
+		return 0;
+	}
+	inodeBitmap[inumber] = 0;
+	
+	int blocknum, position, inodenblocks, i, j;
+	
+	blocknum = inumber/INODES_PER_BLOCK + 1;
+	position = inumber - INODES_PER_BLOCK*(blocknum-2);
+	disk_read(blocknum, block.data);
+	block.inode[position].isvalid = 0;
+	inodenblocks = block.inode[position].size/DISK_BLOCK_SIZE + 1;
+	for(i=0; i<inodenblocks; i++){
+		if(i<POINTERS_PER_INODE){
+			freeBlockBitmap[i]=0;
+		} else if(i == POINTERS_PER_INODE){
+			disk_read(block.inode[position].indirect, temp.data);
+			freeBlockBitmap[block.inode[position].indirect] = 0;
+			for(j=0; j<inodenblocks-i; j++){
+				freeBlockBitmap[temp.pointers[j]] = 0;
+			}
+			return 1;
+		}
+	}
+	
 	return 0;
 }
 
