@@ -13,6 +13,9 @@
 #define POINTERS_PER_INODE 5
 #define POINTERS_PER_BLOCK 1024
 
+int *freeBlockBitmap;
+int *inodeBitmap;
+
 struct fs_superblock {
 	int magic;
 	int nblocks;
@@ -76,10 +79,10 @@ void fs_debug()
 		return;
 	}
 	printf("superblock:\n");
-	printf("	magic number is valid\n");
-	printf("    %d blocks\n",block.super.nblocks);
-	printf("    %d inode blocks\n",block.super.ninodeblocks);
-	printf("    %d inodes\n",block.super.ninodes);
+	printf("\tmagic number is valid\n");
+	printf("\t%d blocks\n",block.super.nblocks);
+	printf("\t%d inode blocks\n",block.super.ninodeblocks);
+	printf("\t%d inodes\n",block.super.ninodes);
 	
 	int i, j, k, l;
 	int inodenum;
@@ -90,7 +93,7 @@ void fs_debug()
 			for(j=0; j<INODES_PER_BLOCK; j++){
 				if(temp.inode[j].isvalid == 1){
 					inodenblocks = temp.inode[j].size/DISK_BLOCK_SIZE + 1;
-					printf("%d\n", inodenblocks);
+					//printf("%d\n", inodenblocks);
 					inodenum = (i-1)*INODES_PER_BLOCK+j;
 					printf("inode %d:\n", inodenum);
 					printf("\tsize: %d bytes\n", temp.inode[j].size);
@@ -121,7 +124,55 @@ void fs_debug()
 
 int fs_mount()
 {
-	return 0;
+	union fs_block block;
+	union fs_block temp;
+	union fs_block tempindirect;
+	disk_read(0, block.data);
+	if(block.super.magic != FS_MAGIC){
+		printf("invalid file system\n");
+		return 0;
+	}
+	freeBlockBitmap = malloc(sizeof(int)*block.super.nblocks);
+	inodeBitmap = malloc(sizeof(int)*block.super.ninodes);
+	int i, j, k, l, inodenblocks, inodenum;
+	for(i=0; i<block.super.ninodes; i++){
+		inodeBitmap[i] = 0;
+	}
+	for(i=0; i<block.super.nblocks; i++){
+		if(i<=block.super.ninodeblocks){
+			freeBlockBitmap[i] = 1;
+		} else {
+			freeBlockBitmap[i] = 0;
+		}
+	}
+	
+	for(i=1; i<=block.super.ninodeblocks; i++){
+		disk_read(i, temp.data);
+		for(j=0; j<INODES_PER_BLOCK; j++){
+			if(temp.inode[j].isvalid){
+				inodenum = (i-1)*INODES_PER_BLOCK+j;
+				inodeBitmap[inodenum] = 1;
+				inodenblocks = temp.inode[j].size/DISK_BLOCK_SIZE + 1;				
+				for(k=0; k<inodenblocks; k++){
+					if(k<POINTERS_PER_INODE){
+						freeBlockBitmap[temp.inode[j].direct[k]] = 1;
+					} else if(k==POINTERS_PER_INODE){
+						disk_read(temp.inode[j].indirect, tempindirect.data);
+						for(l=0; l<inodenblocks-k; l++){
+							freeBlockBitmap[tempindirect.pointers[l]] = 1;
+						}
+						
+						break;
+					}
+					
+					
+				}
+			}
+		}
+	}
+	
+	
+	return 1;
 }
 
 int fs_create()
