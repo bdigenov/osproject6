@@ -13,6 +13,8 @@
 #define POINTERS_PER_INODE 5
 #define POINTERS_PER_BLOCK 1024
 
+int get_free_block();
+
 int IS_MOUNTED = 0;
 int *freeBlockBitmap;
 int *inodeBitmap;
@@ -289,10 +291,39 @@ int fs_delete( int inumber )
 }
 
 int fs_getsize( int inumber )
-{
+{	
 	int size = 0;
+	union fs_block block;
+	union fs_block;
+
+	disk_read(0, block.data);
+	if(block.super.magic != FS_MAGIC || !IS_MOUNTED){
+		printf("Error: Invalid file system\n");
+		return -1;
+	}
+
+	/*if (inodeBitmap[inumber] == 0){
+		printf("Error: %d is not in use\n", inumber);
+		return -1;
+	}*/
 	
-	return -1;
+	int blocknum, position;
+	blocknum = inumber/INODES_PER_BLOCK + 1;
+	position = inumber - INODES_PER_BLOCK*(blocknum-1);
+	disk_read(blocknum, block.data);
+	if (block.inode[position].isvalid == 0) {
+		printf("Error: %d is not a valid inode\n",inumber);
+		return -1;
+	}
+
+	if (block.inode[position].size < 0) {
+		printf("Error: Invalide Size\n");
+		return -1;
+	}
+
+	size = block.inode[position].size;
+	printf("Inode %d size: %d bytes\n", inumber, size);
+	return size;
 }
 
 int fs_read( int inumber, char *tmp, int length, int offset )
@@ -402,5 +433,180 @@ int fs_read( int inumber, char *tmp, int length, int offset )
 
 int fs_write( int inumber, const char *data, int length, int offset )
 {
+	union fs_block block;
+	union fs_block temp;
+	union fs_block indirectTemp;
+	disk_read(0, block.data);
+	if(block.super.magic != FS_MAGIC || !IS_MOUNTED){
+		printf("Error: Invalid file system\n");
+		return 0;
+	}
+	
+	int count = 0;
+	int writtencount = 0;
+	int blocknum, position, i, j;
+	//int k;
+	int blocksSkipped, inodenblocks;
+	int blockoffset;
+	int blockswritten = 0;
+	int newblocknum;
+
+	//Determine blocknum that inode will be in 	
+	blocknum = inumber/INODES_PER_BLOCK + 1;
+	position = inumber - INODES_PER_BLOCK*(blocknum-1); //position in the inode block
+
+	//Read in Inode 
+	disk_read(blocknum, block.data);
+	inodenblocks = block.inode[position].size/DISK_BLOCK_SIZE + 1;
+
+	//Check if inode requested is valid 
+	if(block.inode[position].isvalid == 0){
+		printf("Error: Inode is not valid\n");
+		return 0;
+	}
+
+	
+	inodenblocks = block.inode[position].size/DISK_BLOCK_SIZE + 1;
+	blocksSkipped = offset/DISK_BLOCK_SIZE;				//with the offset, #block 
+	blockoffset = offset - blocksSkipped*DISK_BLOCK_SIZE;
+	while (writtencount < length ){
+		/*if(get_free_block() == -1){
+			printf("Error: Disk is full\n");
+			return 0;
+		}*/
+			//printf("blocksSkipped: %d\n",blocksSkipped);
+		//printf("blockoffset: %d\n", blockoffset);
+
+		//If blocks skipped is not too many continue
+		if(blocksSkipped < POINTERS_PER_INODE){
+			disk_read(block.inode[position].direct[blocksSkipped], temp.data);
+			char *ptr = temp.data;
+			for(i=0; i<DISK_BLOCK_SIZE; i++){
+				if(count >= blockoffset){
+					memcpy(ptr, data+DISK_BLOCK_SIZE*blockswritten, DISK_BLOCK_SIZE-blockoffset);
+					writtencount = writtencount+DISK_BLOCK_SIZE-blockoffset;
+					disk_write(block.inode[position].direct[blocksSkipped], ptr);
+					blockswritten++;
+					length = length - (DISK_BLOCK_SIZE-blockoffset);
+					if(length <= 0){
+						return writtencount;
+					}
+					break;
+					//temp.data[i] = *data;
+					//data++;
+					//*ptr = *data;
+					//data++;
+					//writtencount++;
+					//if(writtencount == length){
+					//	disk_write(block.inode[position].direct[blocksSkipped], ptr);
+					//	return writtencount;
+					//}
+				}
+				ptr++;
+				count++;
+			}
+			//disk_write(block.inode[position].direct[blocksSkipped], ptr);
+			
+		}
+		for(i=blocksSkipped+1; i<inodenblocks; i++){
+			if(i<POINTERS_PER_INODE){
+				disk_read(block.inode[position].direct[i], temp.data);
+				char *ptr = temp.data;
+				if(length>=DISK_BLOCK_SIZE){
+					memcpy(ptr, data+DISK_BLOCK_SIZE*blockswritten-blockoffset,DISK_BLOCK_SIZE);
+					writtencount = writtencount + DISK_BLOCK_SIZE;
+					blockswritten++;
+					length = length - DISK_BLOCK_SIZE;
+					disk_write(block.inode[position].direct[i], ptr);
+				} else {
+					memcpy(ptr, data+DISK_BLOCK_SIZE*blockswritten-blockoffset,length);
+					disk_write(block.inode[position].direct[i], ptr);
+					writtencount = writtencount+length;
+					return writtencount;
+				}
+				/*for(j=0; j<DISK_BLOCK_SIZE; j++){
+					//temp.data[j] = *data;
+					*ptr = *data;
+					data++;
+					ptr++;
+					writtencount++;
+					if(writtencount == length){
+						//data = tmp;
+						disk_write(block.inode[position].direct[i], ptr);
+						return writtencount;
+					}
+
+				}*/
+				
+			} else {
+				disk_read(block.inode[position].indirect, temp.data);
+				for(j=0; j<POINTERS_PER_BLOCK; j++){
+					if(temp.pointers[j] != 0){
+						disk_read(temp.pointers[j], indirectTemp.data);
+						char *ptr = indirectTemp.data;
+						if(length>=DISK_BLOCK_SIZE){
+							memcpy(ptr, data+DISK_BLOCK_SIZE*blockswritten-blockoffset,DISK_BLOCK_SIZE);
+							writtencount = writtencount + DISK_BLOCK_SIZE;
+							blockswritten++;
+							length = length - DISK_BLOCK_SIZE;
+							disk_write(temp.pointers[j], ptr);
+						} else {
+							memcpy(ptr, data+DISK_BLOCK_SIZE*blockswritten-blockoffset,length);
+							disk_write(temp.pointers[j], ptr);
+							writtencount = writtencount+length;
+							return writtencount;
+						}
+						/*for(k=0; k<DISK_BLOCK_SIZE; k++){
+							//indirectTemp.data[k] = *data;
+							*ptr = *data;
+							ptr++;
+							data++;
+							writtencount++;
+							if(writtencount == length){
+								disk_write(temp.pointers[j], ptr);
+								return writtencount;
+							}
+						}*/
+						//disk_write(temp.pointers[j], ptr);
+					}
+				}
+				//NEED TO MAKE A NEW INDIRECT BLOCK
+				
+				for(j=0; j<POINTERS_PER_BLOCK;j++){
+					char *ptr;
+					if(temp.pointers[j]==0){
+						newblocknum = get_free_block();
+						temp.pointers[j] = newblocknum;
+						if(length>=DISK_BLOCK_SIZE){
+							memcpy(ptr, data+DISK_BLOCK_SIZE*blockswritten-blockoffset,DISK_BLOCK_SIZE);
+							writtencount = writtencount + DISK_BLOCK_SIZE;
+							blockswritten++;
+							length = length - DISK_BLOCK_SIZE;
+							disk_write(temp.pointers[j], ptr);
+						} else {
+							memcpy(ptr, data+DISK_BLOCK_SIZE*blockswritten-blockoffset,length);
+							disk_write(temp.pointers[j], ptr);
+							writtencount = writtencount+length;
+							disk_write(block.inode[position].indirect, temp.data);
+							return writtencount;
+						}
+
+					}
+				}
+			}
+		}
+	}
+	return writtencount;
 	return 0;
+}
+
+
+int get_free_block(){
+	int i = 0;
+	for (i = 0; i < sizeof(freeBlockBitmap); i++){
+		if(freeBlockBitmap[i] == 0) {
+			return i;
+		}
+	}
+	return -1;
 }
